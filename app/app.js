@@ -1,19 +1,22 @@
 // Leonida Ledger boot: load the trophy data, wire the checklist, the guide
-// detail pane, the filters, the spoiler setting and the roadmap views.
-import { DEMO_EARNED, exportProgress, importProgressFile, loadProgress, loadSettings, saveProgress, saveSettings } from './store.js';
-import { filterTrophies, isSpoilerMasked } from './filters.js';
-import { renderMissables, renderRoadmap } from './roadmap.js';
+// panel, the filters, the spoiler setting and the roadmap views. Every view
+// keeps the right-hand panel filled with real content — a trophy guide, the
+// platinum card plus a roadmap step, or the missable trophy's full guide.
+import { DEMO_EARNED, downloadProgress, parseProgressFile, readProgress, readSettings, writeProgress, writeSettings } from './store.js';
+import { spoilerMasked, visibleTrophies } from './filters.js';
+import { ROADMAP_STAGES, renderMissables, renderPlatinumCard, renderRoadmap, renderStepDetail } from './roadmap.js';
 
 const params = new URLSearchParams(location.search);
 const doc = await (await fetch('data/trophies.json')).json();
 const trophies = doc.trophies;
+const byId = (id) => trophies.find((t) => t.id === id) ?? null;
 
-let earned = loadProgress();
+let earned = readProgress();
 if (params.get('demo') === '13' && earned.size === 0) {
   earned = new Set(DEMO_EARNED);
-  saveProgress(earned);
+  writeProgress(earned);
 }
-const settings = loadSettings();
+const settings = readSettings();
 if (params.get('spoilers') === 'off') settings.spoilers = false;
 if (params.get('spoilers') === 'on') settings.spoilers = true;
 
@@ -32,7 +35,9 @@ const listMeta = document.getElementById('listMeta');
 
 let kind = params.get('kind') ?? 'all';
 let view = params.get('view') ?? 'checklist';
-let selectedId = Number(params.get('trophy') ?? '') || null;
+let selectedId = Number(params.get('trophy') ?? '') || 1;
+let selectedStep = Number(params.get('step') ?? '') || 2;
+if (selectedStep < 1 || selectedStep > ROADMAP_STAGES.length) selectedStep = 2;
 if (params.get('kind')) {
   kindChips.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c.dataset.kind === kind));
 }
@@ -45,7 +50,7 @@ function gradeLabel(t) {
   return t.grade.charAt(0).toUpperCase() + t.grade.slice(1);
 }
 
-function renderProgress() {
+function paintProgress() {
   const total = trophies.length;
   const pct = Math.round((earned.size / total) * 100);
   progressText.textContent = `${earned.size} of ${total} earned`;
@@ -59,8 +64,8 @@ function renderProgress() {
   gradeCounts.textContent = counts.join(' · ');
 }
 
-function renderChecklist() {
-  const shown = filterTrophies(trophies, {
+function paintChecklist() {
+  const shown = visibleTrophies(trophies, {
     kind,
     grade: gradeEl.value,
     query: searchEl.value,
@@ -87,17 +92,17 @@ function renderChecklist() {
     box.addEventListener('change', () => {
       if (box.checked) earned.add(t.id);
       else earned.delete(t.id);
-      saveProgress(earned);
-      renderProgress();
-      renderChecklist();
-      renderDetail();
+      writeProgress(earned);
+      paintProgress();
+      paintChecklist();
+      paintGuide();
     });
     box.addEventListener('click', (e) => e.stopPropagation());
     const medal = document.createElement('span');
     medal.className = `medal ${t.grade}`;
     medal.title = gradeLabel(t);
     const body = document.createElement('div');
-    const masked = isSpoilerMasked(t, spoilersEl.checked, earned);
+    const masked = spoilerMasked(t, spoilersEl.checked, earned);
     const name = document.createElement('div');
     name.className = 'tname';
     name.textContent = masked ? 'Hidden trophy — earn it to reveal' : t.name;
@@ -134,29 +139,18 @@ function renderChecklist() {
     const grade = document.createElement('span');
     grade.className = 'grade-badge';
     grade.textContent = gradeLabel(t);
-    li.addEventListener('click', () => selectTrophy(t.id));
+    li.addEventListener('click', () => pickTrophy(t.id));
     li.append(box, medal, body, grade);
     listEl.append(li);
   }
 }
 
-function renderDetail() {
-  const t = trophies.find((x) => x.id === selectedId) ?? null;
-  detailEl.replaceChildren();
-  if (!t) {
-    const box = document.createElement('div');
-    box.className = 'detail';
-    const h = document.createElement('h2');
-    h.textContent = 'Pick a trophy to see its guide';
-    const p = document.createElement('p');
-    p.textContent = 'Every guide is written for this entry in our own words, and names its sources — the official list (Exophase / PSNProfiles) plus PowerPyx’s trophy guide and GTABase’s 100% checklist where the facts come from them. A specific place or step with no source earns no credit, so the five trophies whose trigger is still unconfirmed at launch say so instead of guessing.';
-    box.append(h, p);
-    detailEl.append(box);
-    return;
-  }
-  const masked = isSpoilerMasked(t, spoilersEl.checked, earned);
+// One shared guide panel, used by the checklist and by the missables view:
+// name, official description, numbered steps, where/when facts, sources.
+function guidePanel(t) {
   const box = document.createElement('div');
   box.className = 'detail';
+  const masked = spoilerMasked(t, spoilersEl.checked, earned);
   const h = document.createElement('h2');
   h.textContent = masked ? 'Hidden trophy' : t.name;
   const meta = document.createElement('p');
@@ -180,6 +174,33 @@ function renderDetail() {
       p.textContent = para;
       guide.append(p);
     }
+    box.append(guide);
+    if (Array.isArray(t.steps) && t.steps.length) {
+      const sh = document.createElement('h3');
+      sh.textContent = 'How to do it';
+      const ol = document.createElement('ol');
+      ol.className = 'steps';
+      for (const step of t.steps) {
+        const li = document.createElement('li');
+        li.textContent = step;
+        ol.append(li);
+      }
+      box.append(sh, ol);
+    }
+    const facts = document.createElement('table');
+    facts.className = 'facts';
+    const rows = [['Chapter', t.chapter], ['Where', t.where], ['When', t.when], ['Time', t.time]];
+    for (const [label, value] of rows) {
+      if (!value) continue;
+      const tr = document.createElement('tr');
+      const th = document.createElement('th');
+      th.textContent = label;
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.append(th, td);
+      facts.append(tr);
+    }
+    box.append(facts);
     const src = document.createElement('div');
     src.className = 'sources';
     const sh = document.createElement('h3');
@@ -196,16 +217,47 @@ function renderDetail() {
       ul.append(li);
     }
     src.append(sh, ul);
-    box.append(guide, src);
+    box.append(src);
   }
-  detailEl.append(box);
+  return box;
 }
 
-function selectTrophy(id, scroll = true) {
+function paintGuide() {
+  const t = byId(selectedId) ?? trophies[0];
+  detailEl.replaceChildren();
+  detailEl.append(guidePanel(t));
+}
+
+function paintRoadmapSide() {
+  const stage = ROADMAP_STAGES.find((s) => s.step === selectedStep) ?? ROADMAP_STAGES[1];
+  detailEl.replaceChildren();
+  renderPlatinumCard(detailEl, trophies, earned);
+  renderStepDetail(detailEl, trophies, earned, stage, (id) => {
+    showView('checklist');
+    pickTrophy(id);
+  });
+}
+
+function paintMissablesSide() {
+  const t = byId(28);
+  detailEl.replaceChildren();
+  detailEl.append(guidePanel(t));
+}
+
+function pickTrophy(id, scroll = true) {
   selectedId = id;
-  renderChecklist();
-  renderDetail();
+  paintChecklist();
+  paintGuide();
   if (scroll) document.getElementById('detailCol').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function pickStep(step) {
+  selectedStep = step;
+  renderRoadmap(document.getElementById('view-roadmap'), trophies, earned, (id) => {
+    showView('checklist');
+    pickTrophy(id);
+  }, selectedStep, pickStep);
+  paintRoadmapSide();
 }
 
 function showView(next) {
@@ -216,8 +268,24 @@ function showView(next) {
   document.getElementById('view-missables').hidden = next !== 'missables';
   document.getElementById('controls').style.display = next === 'checklist' ? '' : 'none';
   document.getElementById('listMeta').style.display = next === 'checklist' ? '' : 'none';
-  if (next === 'roadmap') renderRoadmap(document.getElementById('view-roadmap'), trophies, earned, (id) => { showView('checklist'); selectTrophy(id); });
-  if (next === 'missables') renderMissables(document.getElementById('view-missables'), trophies, (id) => { showView('checklist'); selectTrophy(id); });
+  if (next === 'roadmap') {
+    listMeta.textContent = '';
+    renderRoadmap(document.getElementById('view-roadmap'), trophies, earned, (id) => {
+      showView('checklist');
+      pickTrophy(id);
+    }, selectedStep, pickStep);
+    paintRoadmapSide();
+  } else if (next === 'missables') {
+    listMeta.textContent = '';
+    renderMissables(document.getElementById('view-missables'), trophies, (id) => {
+      showView('checklist');
+      pickTrophy(id);
+    });
+    paintMissablesSide();
+  } else {
+    paintChecklist();
+    paintGuide();
+  }
 }
 
 document.getElementById('tabs').addEventListener('click', (e) => {
@@ -229,31 +297,31 @@ kindChips.addEventListener('click', (e) => {
   if (!chip) return;
   kind = chip.dataset.kind;
   kindChips.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
-  renderChecklist();
+  paintChecklist();
 });
-searchEl.addEventListener('input', renderChecklist);
-gradeEl.addEventListener('change', renderChecklist);
+searchEl.addEventListener('input', paintChecklist);
+gradeEl.addEventListener('change', paintChecklist);
 spoilersEl.addEventListener('change', () => {
   settings.spoilers = spoilersEl.checked;
-  saveSettings(settings);
-  renderChecklist();
-  renderDetail();
+  writeSettings(settings);
+  paintChecklist();
+  paintGuide();
 });
 hideEarnedEl.addEventListener('change', () => {
   settings.hideEarned = hideEarnedEl.checked;
-  saveSettings(settings);
-  renderChecklist();
+  writeSettings(settings);
+  paintChecklist();
 });
-document.getElementById('export').addEventListener('click', () => exportProgress(earned));
+document.getElementById('export').addEventListener('click', () => downloadProgress(earned));
 document.getElementById('import').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
   try {
-    earned = await importProgressFile(file);
-    saveProgress(earned);
-    renderProgress();
-    renderChecklist();
-    renderDetail();
+    earned = await parseProgressFile(file);
+    writeProgress(earned);
+    paintProgress();
+    paintChecklist();
+    paintGuide();
   } catch {
     alert('That file is not a Leonida Ledger progress export.');
   }
@@ -262,15 +330,16 @@ document.getElementById('import').addEventListener('change', async (e) => {
 document.getElementById('reset').addEventListener('click', () => {
   if (confirm('Clear all earned trophies?')) {
     earned = new Set();
-    saveProgress(earned);
-    renderProgress();
-    renderChecklist();
-    renderDetail();
+    writeProgress(earned);
+    paintProgress();
+    paintChecklist();
+    paintGuide();
   }
 });
 
-renderProgress();
+paintProgress();
 if (view !== 'checklist') showView(view);
-renderChecklist();
-if (selectedId) selectTrophy(selectedId, false);
-else renderDetail();
+else {
+  paintChecklist();
+  pickTrophy(selectedId, false);
+}
