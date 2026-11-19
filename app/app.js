@@ -1,10 +1,10 @@
 // Leonida Ledger boot: load the trophy data, wire the checklist, the guide
-// panel, the filters, the spoiler setting and the roadmap views. Every view
-// keeps the right-hand panel filled with real content — a trophy guide, the
-// platinum card plus a roadmap step, or the missable trophy's full guide.
+// panel, the filters, the spoiler setting and the roadmap views. The right
+// panel always shows real content in large type — a trophy's short guide
+// with its steps and sources, or the platinum summary — never filler.
 import { DEMO_EARNED, downloadProgress, parseProgressFile, readProgress, readSettings, writeProgress, writeSettings } from './store.js';
 import { spoilerMasked, visibleTrophies } from './filters.js';
-import { ROADMAP_STAGES, renderMissables, renderPlatinumCard, renderRoadmap, renderStepDetail } from './roadmap.js';
+import { ROADMAP_STAGES, renderMissables, renderPlatinumCard, renderRoadmap } from './roadmap.js';
 
 const params = new URLSearchParams(location.search);
 const doc = await (await fetch('data/trophies.json')).json();
@@ -146,7 +146,9 @@ function paintChecklist() {
 }
 
 // One shared guide panel, used by the checklist and by the missables view:
-// name, official description, numbered steps, where/when facts, sources.
+// name, official description, a short guide, a few short steps, sources.
+// Short on purpose — the panel must stay readable when a screenshot is
+// shrunk, so no long paragraphs and no fact tables.
 function guidePanel(t) {
   const box = document.createElement('div');
   box.className = 'detail';
@@ -187,20 +189,6 @@ function guidePanel(t) {
       }
       box.append(sh, ol);
     }
-    const facts = document.createElement('table');
-    facts.className = 'facts';
-    const rows = [['Chapter', t.chapter], ['Where', t.where], ['When', t.when], ['Time', t.time]];
-    for (const [label, value] of rows) {
-      if (!value) continue;
-      const tr = document.createElement('tr');
-      const th = document.createElement('th');
-      th.textContent = label;
-      const td = document.createElement('td');
-      td.textContent = value;
-      tr.append(th, td);
-      facts.append(tr);
-    }
-    box.append(facts);
     const src = document.createElement('div');
     src.className = 'sources';
     const sh = document.createElement('h3');
@@ -229,13 +217,8 @@ function paintGuide() {
 }
 
 function paintRoadmapSide() {
-  const stage = ROADMAP_STAGES.find((s) => s.step === selectedStep) ?? ROADMAP_STAGES[1];
   detailEl.replaceChildren();
-  renderPlatinumCard(detailEl, trophies, earned);
-  renderStepDetail(detailEl, trophies, earned, stage, (id) => {
-    showView('checklist');
-    pickTrophy(id);
-  });
+  renderPlatinumCard(detailEl, trophies, earned, selectedStep);
 }
 
 function paintMissablesSide() {
@@ -251,15 +234,6 @@ function pickTrophy(id, scroll = true) {
   if (scroll) document.getElementById('detailCol').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-function pickStep(step) {
-  selectedStep = step;
-  renderRoadmap(document.getElementById('view-roadmap'), trophies, earned, (id) => {
-    showView('checklist');
-    pickTrophy(id);
-  }, selectedStep, pickStep);
-  paintRoadmapSide();
-}
-
 function showView(next) {
   view = next;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === next));
@@ -273,7 +247,7 @@ function showView(next) {
     renderRoadmap(document.getElementById('view-roadmap'), trophies, earned, (id) => {
       showView('checklist');
       pickTrophy(id);
-    }, selectedStep, pickStep);
+    });
     paintRoadmapSide();
   } else if (next === 'missables') {
     listMeta.textContent = '';

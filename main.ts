@@ -2,9 +2,9 @@
 //
 // The guide itself is app/: plain static files — index.html, its modules and
 // styles, and app/data/trophies.json with the 55 official trophies, each with
-// a cited guide, numbered steps and where/when facts. It runs offline in a
-// browser with no build step and makes no network request. This program
-// copies app/ and screenshots/ from beside this file into /output and writes
+// a short cited guide and a few short steps. It runs offline in a browser
+// with no build step and makes no network request. This program copies app/
+// and screenshots/ from beside this file into /output and writes
 // /output/dossier.json, the summary the judge reads, using the vendored
 // make.fun library. Leave vendor/makefun-frontend.ts untouched: the scorer
 // rebuilds the dossier with its own copy and requires the two to match byte
